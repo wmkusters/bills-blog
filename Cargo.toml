@@ -1,0 +1,4 @@
+[package]
+name = "Bill's Blog"
+version = "0.0.1"
+authors = [ "Bill Kusters <wmkusters@gmail.com>" ]
