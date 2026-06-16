@@ -7,3 +7,4 @@ tmp/
 /pkg
 node_modules
 dist
+/target
