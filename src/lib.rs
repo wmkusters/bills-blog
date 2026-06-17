@@ -1,66 +1,21 @@
 use std::{iter};
 use rapier3d::prelude::*;
 use std::cell::RefCell;
-use std::error::Error;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 use wgpu::util::DeviceExt;
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    color: [f32; 3],
-}
+mod model;
+mod camera;
+mod resources;
+//mod resources;
+mod texture;
 
-impl Vertex {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-            ],
-        }
-    }
-}
+use model::{DrawModel, Vertex};
+use camera::{Camera,CameraUniform};
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-0.0868241, 0.49240386, 0.0],
-        color: [0.5, 0.0, 0.5],
-    }, // A
-    Vertex {
-        position: [-0.49513406, 0.06958647, 0.0],
-        color: [0.5, 0.0, 0.5],
-    }, // B
-    Vertex {
-        position: [-0.21918549, -0.44939706, 0.0],
-        color: [0.5, 0.0, 0.5],
-    }, // C
-    Vertex {
-        position: [0.35966998, -0.3473291, 0.0],
-        color: [0.5, 0.0, 0.5],
-    }, // D
-    Vertex {
-        position: [0.44147372, 0.2347359, 0.0],
-        color: [0.5, 0.0, 0.5],
-    }, // E
-];
-
-const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4, /* padding */ 0];
-
-async fn arun() -> Result<(), JsValue>{
+async fn arun() -> anyhow::Result<()> {
     let mut ticker = Ticker::new(1.0);
     let callback = Rc::new(RefCell::new(None));
     let callback_clone = callback.clone();
@@ -105,9 +60,11 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
+    obj_model: model::Model,
+    camera: Camera,
+    camera_uniform: CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
     // physics
     physics_pipeline: PhysicsPipeline,
     gravity: Vector,
@@ -125,7 +82,7 @@ struct State {
 }
 
 impl State {
-    async fn new() -> Result<State, Box<dyn Error>> {
+    async fn new() -> anyhow::Result<State> {
         let document = web_sys::window().unwrap().document().unwrap();
         let canvas = document
             .get_element_by_id("canvas")
@@ -179,11 +136,85 @@ impl State {
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
         };
+
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+
+        let camera = Camera {
+            eye: (0.0, 5.0, 10.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: cgmath::Vector3::unit_y(),
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+        let mut camera_uniform = CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
+        });
+
+        let obj_model = resources::load_model(
+            "res/rustacean-3d.obj",
+            &device,
+            &queue,
+            &texture_bind_group_layout,
+        )
+        .await
+        .unwrap();
+
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[Some(&texture_bind_group_layout), Some(&camera_bind_group_layout)],
                 immediate_size: 0,
             });
 
@@ -235,18 +266,6 @@ impl State {
             cache: None,
         });
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let num_indices = INDICES.len() as u32;
-
         /* physics */
         let mut rigid_body_set = RigidBodySet::new();
         let mut collider_set = ColliderSet::new();
@@ -281,9 +300,11 @@ impl State {
             config,
             is_surface_configured: false,
             render_pipeline,
-            vertex_buffer,
-            index_buffer,
-            num_indices,
+            obj_model,
+            camera,
+            camera_buffer,
+            camera_bind_group,
+            camera_uniform,
             physics_pipeline,
             gravity,
             integration_parameters,
@@ -322,7 +343,7 @@ impl State {
         0.0
     }
 
-    fn render(&mut self) -> Result<(), Box<dyn Error>>{
+    fn render(&mut self) -> anyhow::Result<()> {
         if !self.is_surface_configured {
             return Ok(());
         }
@@ -383,9 +404,10 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            render_pass.draw_model(
+                &self.obj_model,
+                &self.camera_bind_group,
+            );
         }
 
         self.queue.submit(iter::once(encoder.finish()));
