@@ -53,7 +53,7 @@ version = "0.0.1"
 dependencies = [
  "console_log",
  "log",
- "rapier2d",
+ "rapier3d",
  "wasm-bindgen",
  "web-sys",
  "wgpu",
@@ -114,6 +114,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cfg-if"
@@ -365,6 +371,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -391,6 +406,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -745,10 +770,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "parry2d"
+name = "parry3d"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7442878be87d7db217355c73d925df664b0f8e46faf115c58a52139a3e40c8cd"
+checksum = "15fa77de549af010eddaf4bcb365b39aee96f93f65489b9a49b2de616fc664e8"
 dependencies = [
  "approx",
  "arrayvec",
@@ -763,10 +788,12 @@ dependencies = [
  "num-derive",
  "num-traits",
  "ordered-float",
+ "rstar",
  "simba",
  "slab",
  "smallvec",
  "spade",
+ "static_assertions",
  "thiserror",
 ]
 
@@ -847,10 +874,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 
 [[package]]
-name = "rapier2d"
+name = "rapier3d"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6350781ded7f80bc5c76ef9c45c57813c34c2b3df43769677114633a6b36059e"
+checksum = "9038df6d760a6448b39adf6286744acdb54e2a0edf04b8ab6a9f5e9998968317"
 dependencies = [
  "approx",
  "bitflags",
@@ -858,7 +885,7 @@ dependencies = [
  "log",
  "nalgebra",
  "num-traits",
- "parry2d",
+ "parry3d",
  "profiling",
  "serde",
  "simba",
@@ -911,6 +938,17 @@ name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
+
+[[package]]
+name = "rstar"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5912b862fa5ffb462607bfd1e35036c458c537921f508c8235a83d5f3987edfe"
+dependencies = [
+ "heapless",
+ "num-traits",
+ "smallvec",
+]
 
 [[package]]
 name = "rustc-hash"
@@ -1022,6 +1060,12 @@ checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "static_assertions"
