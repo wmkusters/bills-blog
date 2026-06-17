@@ -17,9 +17,18 @@ log = "^0.4"
 web-sys = { version = "^0.3", features = [
     "Window",
     "Document",
-    "HtmlCanvasElement"
+    "Element",
+    "HtmlCanvasElement",
+    "DomRect",
+    "Location",
+    "console",
 ]}
 bytemuck = "1.25.0"
 anyhow = "1.0.102"
 cgmath = "0.18.0"
 image = "0.25.10"
+reqwest = "0.13.4"
+tobj = { version = "3.2", default-features = false, features = ["async"]}
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

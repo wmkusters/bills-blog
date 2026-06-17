@@ -19,6 +19,19 @@ pub struct Camera {
 }
 
 impl Camera {
+    pub fn new(width: f32, height: f32) -> Camera {
+        let eye: cgmath::Point3<f32> = (15.0, 15.0, 15.0).into();
+        log::info!("Camera eye: {:?}", eye);
+        Camera {
+            eye,
+            target: (0.0, 0.0, 0.0).into(),
+            up: cgmath::Vector3::unit_y(),
+            aspect: width / height,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        }
+    }
     fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
         let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
         let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);

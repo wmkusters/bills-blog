@@ -1,19 +1,81 @@
-use std::{iter};
+use cgmath::prelude::*;
 use rapier3d::prelude::*;
 use std::cell::RefCell;
+use std::iter;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 use wgpu::util::DeviceExt;
 
-mod model;
 mod camera;
+mod model;
 mod resources;
-//mod resources;
 mod texture;
 
+use camera::{Camera, CameraUniform};
 use model::{DrawModel, Vertex};
-use camera::{Camera,CameraUniform};
+
+struct Instance {
+    position: cgmath::Vector3<f32>,
+    rotation: cgmath::Quaternion<f32>,
+}
+
+// NEW!
+impl Instance {
+    fn to_raw(&self) -> InstanceRaw {
+        InstanceRaw {
+            model: (cgmath::Matrix4::from_translation(self.position)
+                * cgmath::Matrix4::from(self.rotation))
+            .into(),
+        }
+    }
+}
+
+// NEW!
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw {
+    model: [[f32; 4]; 4],
+}
+
+impl InstanceRaw {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        use std::mem;
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
+            // We need to switch from using a step mode of Vertex to Instance
+            // This means that our shaders will only change to use the next
+            // instance when the shader starts processing a new instance
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    // While our vertex shader only uses locations 0, and 1 now, in later tutorials we'll
+                    // be using 2, 3, and 4, for Vertex. We'll start at slot 5 not conflict with them later
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                // A mat4 takes up 4 vertex slots as it is technically 4 vec4s. We need to define a slot
+                // for each vec4. We don't have to do this in code though.
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
 
 async fn arun() -> anyhow::Result<()> {
     let mut ticker = Ticker::new(1.0);
@@ -25,10 +87,10 @@ async fn arun() -> anyhow::Result<()> {
     let mut state = State::new().await.unwrap();
     state.resize();
     *callback_clone.borrow_mut() = Some(Closure::new(move || {
+        state.resize();
         state.render().unwrap();
         let steps = ticker.tick(30.0 / 60.0);
         for _ in 0..steps {
-            log::info!("step");
             state.step();
         }
 
@@ -48,7 +110,6 @@ pub fn run() {
     wasm_bindgen_futures::spawn_local(async {
         arun().await.unwrap_throw();
     });
-
 }
 
 struct State {
@@ -65,6 +126,8 @@ struct State {
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer,
     // physics
     physics_pipeline: PhysicsPipeline,
     gravity: Vector,
@@ -89,6 +152,14 @@ impl State {
             .unwrap()
             .dyn_into::<HtmlCanvasElement>()
             .unwrap();
+        let window = web_sys::window().unwrap();
+        let dpr = window.device_pixel_ratio();
+        let rect = canvas.get_bounding_client_rect();
+        let width = (rect.width() * dpr) as u32;
+        let height = (rect.height() * dpr) as u32;
+
+        canvas.set_width(width);
+        canvas.set_height(height);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::BROWSER_WEBGPU,
@@ -98,25 +169,29 @@ impl State {
             display: None,
         });
         let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))?;
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }).await?;
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features: wgpu::Features::empty(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            // WebGL doesn't support all of wgpu's features, so if
-            // we're building for the web we'll have to disable some.
-            required_limits: if cfg!(target_arch = "wasm32") {
-                wgpu::Limits::downlevel_webgl2_defaults()
-            } else {
-                wgpu::Limits::default()
-            },
-            memory_hints: Default::default(),
-            trace: wgpu::Trace::Off,
-        }).await?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::empty(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                // WebGL doesn't support all of wgpu's features, so if
+                // we're building for the web we'll have to disable some.
+                required_limits: if cfg!(target_arch = "wasm32") {
+                    wgpu::Limits::downlevel_webgl2_defaults()
+                } else {
+                    wgpu::Limits::default()
+                },
+                memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
+            })
+            .await?;
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -160,15 +235,24 @@ impl State {
                 label: Some("texture_bind_group_layout"),
             });
 
-        let camera = Camera {
-            eye: (0.0, 5.0, 10.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
-            up: cgmath::Vector3::unit_y(),
-            aspect: config.width as f32 / config.height as f32,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-        };
+        let instances = vec![Instance {
+            position: cgmath::Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            rotation: cgmath::Quaternion::from_axis_angle(
+                cgmath::Vector3::unit_x(),
+                cgmath::Deg(270.0),
+            ),
+        }];
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let camera = Camera::new(config.width as f32, config.height as f32);
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
 
@@ -201,20 +285,19 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
-        let obj_model = resources::load_model(
-            "res/rustacean-3d.obj",
-            &device,
-            &queue,
-            &texture_bind_group_layout,
-        )
-        .await
-        .unwrap();
+        let obj_model =
+            resources::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
+                .await
+                .unwrap();
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[Some(&texture_bind_group_layout), Some(&camera_bind_group_layout)],
+                bind_group_layouts: &[
+                    Some(&texture_bind_group_layout),
+                    Some(&camera_bind_group_layout),
+                ],
                 immediate_size: 0,
             });
 
@@ -224,7 +307,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[model::ModelVertex::desc(), InstanceRaw::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -277,6 +360,7 @@ impl State {
         /* Create the bouncing ball. */
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(Vector::new(0.0, 10.0, 0.0))
+            .rotation(Vector::new(0.0, std::f32::consts::PI / 4.0, 0.0))
             .build();
         let collider = ColliderBuilder::ball(0.5).restitution(0.7).build();
         let ball_body_handle = rigid_body_set.insert(rigid_body);
@@ -302,9 +386,11 @@ impl State {
             render_pipeline,
             obj_model,
             camera,
-            camera_buffer,
             camera_bind_group,
             camera_uniform,
+            camera_buffer,
+            instances,
+            instance_buffer,
             physics_pipeline,
             gravity,
             integration_parameters,
@@ -335,7 +421,34 @@ impl State {
             &hooks,
             &hooks,
         );
+        let mut bod: RigidBody;
+        for (_, b) in self.bodies.iter() {
+            bod = b;
+            break;
+        }
+
+        for i in self.instances.iter_mut() {
+            i.position = cgmath::vec3(
+                bod.translation().x,
+                bod.translation().y,
+                bod.translation().z,
+            );
+            i.rotation =
+                cgmath::Quaternion::new(bod.rotation.w(), rotation.i(), rotation.j(), rotation.k());
+        }
+
+        let instance_data = self
+            .instances
+            .iter()
+            .map(Instance::to_raw)
+            .collect::<Vec<_>>();
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(&instance_data),
+        );
     }
+
     fn ball_y(&mut self) -> f32 {
         for (_, b) in self.bodies.iter() {
             return b.translation().y;
@@ -403,9 +516,11 @@ impl State {
                 multiview_mask: None,
             });
 
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.draw_model(
+            render_pass.draw_model_instanced(
                 &self.obj_model,
+                0..self.instances.len() as u32,
                 &self.camera_bind_group,
             );
         }
@@ -417,6 +532,13 @@ impl State {
     }
 
     fn resize(&mut self) {
+        // TODO update aspect ratio here as well
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
         let width = self.canvas.width();
         let height = self.canvas.height();
         let max_size = self.device.limits().max_texture_dimension_2d;
