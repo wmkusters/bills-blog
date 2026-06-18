@@ -89,7 +89,8 @@ async fn arun() -> anyhow::Result<()> {
     *callback_clone.borrow_mut() = Some(Closure::new(move || {
         state.resize();
         state.render().unwrap();
-        let steps = ticker.tick(30.0 / 60.0);
+        let steps = ticker.tick(240.0 / 60.0);
+        log::info!("running {} steps", steps);
         for _ in 0..steps {
             state.step();
         }
@@ -360,9 +361,15 @@ impl State {
         /* Create the bouncing ball. */
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(Vector::new(0.0, 10.0, 0.0))
-            .rotation(Vector::new(0.0, std::f32::consts::PI / 4.0, 0.0))
+            .rotation(Vector::new(
+                std::f32::consts::PI / 4.0,
+                std::f32::consts::PI / 4.0,
+                0.0,
+            ))
             .build();
-        let collider = ColliderBuilder::ball(0.5).restitution(0.7).build();
+        let collider = ColliderBuilder::cuboid(0.5, 0.5, 0.5)
+            .restitution(0.7)
+            .build();
         let ball_body_handle = rigid_body_set.insert(rigid_body);
         collider_set.insert_with_parent(collider, ball_body_handle, &mut rigid_body_set);
 
@@ -421,11 +428,7 @@ impl State {
             &hooks,
             &hooks,
         );
-        let mut bod: RigidBody;
-        for (_, b) in self.bodies.iter() {
-            bod = b;
-            break;
-        }
+        let (_, bod) = self.bodies.iter().next().unwrap();
 
         for i in self.instances.iter_mut() {
             i.position = cgmath::vec3(
@@ -433,8 +436,12 @@ impl State {
                 bod.translation().y,
                 bod.translation().z,
             );
-            i.rotation =
-                cgmath::Quaternion::new(bod.rotation.w(), rotation.i(), rotation.j(), rotation.k());
+            i.rotation = cgmath::Quaternion::new(
+                bod.rotation().w,
+                bod.rotation().x,
+                bod.rotation().y,
+                bod.rotation().z,
+            );
         }
 
         let instance_data = self
@@ -580,7 +587,7 @@ impl Ticker {
     /// Call once per requestAnimationFrame with the seconds elapsed since
     /// the last call. Returns how many fixed steps should run this frame.
     pub fn tick(&mut self, frame_dt: f64) -> u32 {
-        self.accumulator += frame_dt.clamp(0.0, 0.25); // avoid spiral of death
+        self.accumulator += frame_dt.clamp(0.0, 1.0); // avoid spiral of death
         let mut steps = 0u32;
         while self.accumulator >= self.fixed_dt {
             self.accumulator -= self.fixed_dt;
