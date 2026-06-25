@@ -1,4 +1,3 @@
-use cgmath::prelude::*;
 use rapier3d::prelude::*;
 use std::cell::RefCell;
 use std::iter;
@@ -171,177 +170,19 @@ impl State {
         canvas.set_width(width);
         canvas.set_height(height);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::BROWSER_WEBGPU,
-            flags: Default::default(),
-            memory_budget_thresholds: Default::default(),
-            backend_options: Default::default(),
-            display: None,
-        });
-        let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
-                memory_hints: Default::default(),
-                trace: wgpu::Trace::Off,
-            })
-            .await?;
-
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
-        let max_size = device.limits().max_texture_dimension_2d;
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width: canvas.width().clamp(1, max_size),
-            height: canvas.height().clamp(1, max_size),
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
-            desired_maximum_frame_latency: 2,
-            view_formats: vec![],
-        };
-        let depth_view = create_depth_texture(&device, &config);
-
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
-
-        let camera = Camera::new(config.width as f32, config.height as f32);
-        let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update_view_proj(&camera);
-
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[camera_uniform]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("camera_bind_group_layout"),
-            });
-
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-            label: Some("camera_bind_group"),
-        });
-
-        let obj_model =
-            resources::load_model("ball_solo.obj", &device, &queue, &texture_bind_group_layout)
-                .await
-                .unwrap();
-
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[
-                    Some(&texture_bind_group_layout),
-                    Some(&camera_bind_group_layout),
-                ],
-                immediate_size: 0,
-            });
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[model::ModelVertex::desc(), InstanceRaw::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent::REPLACE,
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::POLYGON_MODE_LINE
-                // or Features::POLYGON_MODE_POINT
-                polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
-                unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            // If the pipeline will be used with a multiview render pass, this
-            // tells wgpu to render to just specific texture layers.
-            multiview_mask: None,
-            // Useful for optimizing shader compilation on Android
-            cache: None,
-        });
+        let GraphicsState {
+            surface,
+            device,
+            queue,
+            config,
+            render_pipeline,
+            obj_model,
+            camera,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            depth_view,
+        } = setup_graphics(&canvas).await?;
 
         /* physics */
         let mut rigid_body_set = RigidBodySet::new();
@@ -350,32 +191,32 @@ impl State {
         /* Create the ground. */
         let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
             .translation(Vector::new(0.0, -10.0, 0.0))
-            .friction(0.0)
-            .restitution(1.4)
+            .friction(0.1)
+            .restitution(0.0)
             .build();
         collider_set.insert(collider);
         let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
             .translation(Vector::new(0.0, 10.0, 20.0))
-            .friction(0.0)
-            .restitution(1.4)
+            .friction(0.1)
+            .restitution(0.0)
             .build();
         collider_set.insert(collider);
         let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
             .translation(Vector::new(-20.0, 10.0, 0.0))
-            .friction(0.0)
-            .restitution(1.4)
+            .friction(0.1)
+            .restitution(0.0)
             .build();
         collider_set.insert(collider);
         let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
             .translation(Vector::new(0.0, 10.0, -20.0))
-            .friction(0.0)
-            .restitution(1.4)
+            .friction(0.1)
+            .restitution(0.0)
             .build();
         collider_set.insert(collider);
         let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
             .translation(Vector::new(0.0, 20.0, 0.0))
-            .friction(0.0)
-            .restitution(1.4)
+            .friction(0.1)
+            .restitution(0.0)
             .build();
         collider_set.insert(collider);
 
@@ -398,18 +239,16 @@ impl State {
             scale: 0.5,
         });
         let mut rigid_body = RigidBodyBuilder::dynamic()
-            //.translation(Vector::new(0.0, 10.0, 0.0))
+            .translation(Vector::new(0.0, 0.50, 0.0))
             .rotation(Vector::new(
                 std::f32::consts::PI / 4.0,
                 std::f32::consts::PI / 4.0,
                 0.0,
             ))
-            .linvel(Vector::new(0.0, 5.0, 5.0))
+            .linvel(Vector::new(0.0, 0.0, -7.5))
             .build();
         rigid_body.set_enabled_translations(false, true, true, true);
-        let collider = ColliderBuilder::cuboid(0.5, 0.5, 0.5)
-            .restitution(0.7)
-            .build();
+        let collider = ColliderBuilder::ball(0.5).restitution(0.0).build();
         let ball_body_handle = rigid_body_set.insert(rigid_body);
         collider_set.insert_with_parent(collider, ball_body_handle, &mut rigid_body_set);
 
@@ -421,7 +260,7 @@ impl State {
         });
 
         /* Create other structures necessary for the simulation. */
-        let gravity = Vector::new(0.0, 0.0, 0.0);
+        let gravity = Vector::new(0.0, -9.81, -0.0);
         let integration_parameters = IntegrationParameters::default();
         let physics_pipeline = PhysicsPipeline::new();
         let island_manager = IslandManager::new();
@@ -608,7 +447,9 @@ impl State {
     }
 
     fn resize(&mut self) {
-        // TODO update aspect ratio here as well
+        let width = self.canvas.width();
+        let height = self.canvas.height();
+        self.camera.update(width as f32, height as f32);
         self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -616,8 +457,6 @@ impl State {
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
         self.depth_view = create_depth_texture(&self.device, &self.config);
-        let width = self.canvas.width();
-        let height = self.canvas.height();
         let max_size = self.device.limits().max_texture_dimension_2d;
         if width > 0 && height > 0 {
             self.config.width = width.clamp(1, max_size);
@@ -691,4 +530,206 @@ fn create_depth_texture(
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+struct GraphicsState {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    render_pipeline: wgpu::RenderPipeline,
+    obj_model: model::Model,
+    camera: Camera,
+    camera_uniform: CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    // instances: Vec<Instance>,
+    // instance_buffer: wgpu::Buffer,
+    depth_view: wgpu::TextureView,
+}
+
+async fn setup_graphics(canvas: &HtmlCanvasElement) -> anyhow::Result<GraphicsState> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::BROWSER_WEBGPU,
+        flags: Default::default(),
+        memory_budget_thresholds: Default::default(),
+        backend_options: Default::default(),
+        display: None,
+    });
+    let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))?;
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        })
+        .await?;
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
+            memory_hints: Default::default(),
+            trace: wgpu::Trace::Off,
+        })
+        .await?;
+
+    let surface_caps = surface.get_capabilities(&adapter);
+    let surface_format = surface_caps
+        .formats
+        .iter()
+        .copied()
+        .find(|f| f.is_srgb())
+        .unwrap_or(surface_caps.formats[0]);
+    let max_size = device.limits().max_texture_dimension_2d;
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: surface_format,
+        width: canvas.width().clamp(1, max_size),
+        height: canvas.height().clamp(1, max_size),
+        present_mode: surface_caps.present_modes[0],
+        alpha_mode: surface_caps.alpha_modes[0],
+        desired_maximum_frame_latency: 2,
+        view_formats: vec![],
+    };
+    let depth_view = create_depth_texture(&device, &config);
+
+    let texture_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("texture_bind_group_layout"),
+        });
+
+    let camera = Camera::new(config.width as f32, config.height as f32);
+    let mut camera_uniform = CameraUniform::new();
+    camera_uniform.update_view_proj(&camera);
+
+    let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Camera Buffer"),
+        contents: bytemuck::cast_slice(&[camera_uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    let camera_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("camera_bind_group_layout"),
+        });
+
+    let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &camera_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: camera_buffer.as_entire_binding(),
+        }],
+        label: Some("camera_bind_group"),
+    });
+
+    let obj_model =
+        resources::load_model("ball_solo.obj", &device, &queue, &texture_bind_group_layout)
+            .await
+            .unwrap();
+
+    let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Render Pipeline Layout"),
+        bind_group_layouts: &[
+            Some(&texture_bind_group_layout),
+            Some(&camera_bind_group_layout),
+        ],
+        immediate_size: 0,
+    });
+
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[model::ModelVertex::desc(), InstanceRaw::desc()],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: config.format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent::REPLACE,
+                    alpha: wgpu::BlendComponent::REPLACE,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            // Setting this to anything other than Fill requires Features::POLYGON_MODE_LINE
+            // or Features::POLYGON_MODE_POINT
+            polygon_mode: wgpu::PolygonMode::Fill,
+            // Requires Features::DEPTH_CLIP_CONTROL
+            unclipped_depth: false,
+            // Requires Features::CONSERVATIVE_RASTERIZATION
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        // If the pipeline will be used with a multiview render pass, this
+        // tells wgpu to render to just specific texture layers.
+        multiview_mask: None,
+        // Useful for optimizing shader compilation on Android
+        cache: None,
+    });
+    return Ok(GraphicsState {
+        surface,
+        device,
+        queue,
+        config,
+        render_pipeline,
+        obj_model,
+        camera,
+        camera_bind_group,
+        camera_uniform,
+        camera_buffer,
+        depth_view,
+    });
 }

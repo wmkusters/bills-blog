@@ -20,18 +20,28 @@ pub struct Camera {
 
 impl Camera {
     pub fn new(width: f32, height: f32) -> Camera {
-        let eye: cgmath::Point3<f32> = (15.0, 5.0, 0.0).into();
+        let aspect = width / height;
+        let fovy: f32 = 45.0;
+        let distance_for_height = (9.5 / 2.0) / (fovy.to_radians() / 2.0).tan();
+        let distance_for_width = (9.5 / 2.0) / (aspect * (fovy.to_radians() / 2.0)).tan();
+        let eye: cgmath::Point3<f32> =
+            (distance_for_height.max(distance_for_width), 5.0, 0.0).into();
         log::info!("Camera eye: {:?}", eye);
         Camera {
             eye,
             target: (0.0, 5.0, 0.0).into(),
             up: cgmath::Vector3::unit_y(),
-            aspect: width / height,
+            aspect,
             fovy: 45.0,
             znear: 0.1,
             zfar: 100.0,
         }
     }
+
+    pub fn update(&mut self, width: f32, height: f32) {
+        self.aspect = width / height
+    }
+
     fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
         let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
         let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
