@@ -18,6 +18,7 @@ use model::{DrawModel, Vertex};
 struct Instance {
     position: cgmath::Vector3<f32>,
     rotation: cgmath::Quaternion<f32>,
+    scale: f32,
 }
 
 // NEW!
@@ -25,7 +26,8 @@ impl Instance {
     fn to_raw(&self) -> InstanceRaw {
         InstanceRaw {
             model: (cgmath::Matrix4::from_translation(self.position)
-                * cgmath::Matrix4::from(self.rotation))
+                * cgmath::Matrix4::from(self.rotation)
+                * cgmath::Matrix4::from_scale(self.scale))
             .into(),
         }
     }
@@ -95,7 +97,13 @@ async fn arun() -> anyhow::Result<()> {
             state.step();
         }
 
-        let s = format!("Ball altitude: {}", state.ball_y()).to_string();
+        let s = format!(
+            "Ball x: {}, ball y: {}, ball z: {}",
+            state.ball_x(),
+            state.ball_y(),
+            state.ball_z()
+        )
+        .to_string();
         text.set_text_content(Some(&s));
         request_animation_frame(callback.borrow().as_ref().unwrap());
     }));
@@ -129,6 +137,7 @@ struct State {
     camera_bind_group: wgpu::BindGroup,
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
+    depth_view: wgpu::TextureView,
     // physics
     physics_pipeline: PhysicsPipeline,
     gravity: Vector,
@@ -182,13 +191,7 @@ impl State {
                 label: None,
                 required_features: wgpu::Features::empty(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                // WebGL doesn't support all of wgpu's features, so if
-                // we're building for the web we'll have to disable some.
-                required_limits: if cfg!(target_arch = "wasm32") {
-                    wgpu::Limits::downlevel_webgl2_defaults()
-                } else {
-                    wgpu::Limits::default()
-                },
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off,
             })
@@ -212,6 +215,7 @@ impl State {
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
         };
+        let depth_view = create_depth_texture(&device, &config);
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -236,23 +240,6 @@ impl State {
                 label: Some("texture_bind_group_layout"),
             });
 
-        let instances = vec![Instance {
-            position: cgmath::Vector3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            rotation: cgmath::Quaternion::from_axis_angle(
-                cgmath::Vector3::unit_x(),
-                cgmath::Deg(270.0),
-            ),
-        }];
-        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
         let camera = Camera::new(config.width as f32, config.height as f32);
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
@@ -287,7 +274,7 @@ impl State {
         });
 
         let obj_model =
-            resources::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
+            resources::load_model("ball_solo.obj", &device, &queue, &texture_bind_group_layout)
                 .await
                 .unwrap();
 
@@ -337,7 +324,13 @@ impl State {
                 // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -355,26 +348,80 @@ impl State {
         let mut collider_set = ColliderSet::new();
 
         /* Create the ground. */
-        let collider = ColliderBuilder::cuboid(100.0, 0.1, 0.1).build();
+        let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
+            .translation(Vector::new(0.0, -10.0, 0.0))
+            .friction(0.0)
+            .restitution(1.4)
+            .build();
+        collider_set.insert(collider);
+        let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
+            .translation(Vector::new(0.0, 10.0, 20.0))
+            .friction(0.0)
+            .restitution(1.4)
+            .build();
+        collider_set.insert(collider);
+        let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
+            .translation(Vector::new(-20.0, 10.0, 0.0))
+            .friction(0.0)
+            .restitution(1.4)
+            .build();
+        collider_set.insert(collider);
+        let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
+            .translation(Vector::new(0.0, 10.0, -20.0))
+            .friction(0.0)
+            .restitution(1.4)
+            .build();
+        collider_set.insert(collider);
+        let collider = ColliderBuilder::cuboid(10.0, 10.0, 10.0)
+            .translation(Vector::new(0.0, 20.0, 0.0))
+            .friction(0.0)
+            .restitution(1.4)
+            .build();
         collider_set.insert(collider);
 
-        /* Create the bouncing ball. */
-        let rigid_body = RigidBodyBuilder::dynamic()
-            .translation(Vector::new(0.0, 10.0, 0.0))
+        let mut instances = vec![];
+        //for (_, c) in collider_set.iter() {
+        //    instances.push(Instance {
+        //        position: cgmath::vec3(c.translation().x, c.translation().y, c.translation().z),
+        //        rotation: cgmath::Quaternion::new(
+        //            c.rotation().w,
+        //            c.rotation().x,
+        //            c.rotation().y,
+        //            c.rotation().z,
+        //        ),
+        //        scale: c.shape().as_cuboid().unwrap().half_extents.x,
+        //    });
+        //}
+        instances.push(Instance {
+            position: cgmath::vec3(0.0, 10.0, 0.0),
+            rotation: cgmath::Quaternion::from_sv(1.0, cgmath::vec3(0.0, 0.0, 0.0)),
+            scale: 0.5,
+        });
+        let mut rigid_body = RigidBodyBuilder::dynamic()
+            //.translation(Vector::new(0.0, 10.0, 0.0))
             .rotation(Vector::new(
                 std::f32::consts::PI / 4.0,
                 std::f32::consts::PI / 4.0,
                 0.0,
             ))
+            .linvel(Vector::new(0.0, 5.0, 5.0))
             .build();
+        rigid_body.set_enabled_translations(false, true, true, true);
         let collider = ColliderBuilder::cuboid(0.5, 0.5, 0.5)
             .restitution(0.7)
             .build();
         let ball_body_handle = rigid_body_set.insert(rigid_body);
         collider_set.insert_with_parent(collider, ball_body_handle, &mut rigid_body_set);
 
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
         /* Create other structures necessary for the simulation. */
-        let gravity = Vector::new(0.0, -9.81, 0.0);
+        let gravity = Vector::new(0.0, 0.0, 0.0);
         let integration_parameters = IntegrationParameters::default();
         let physics_pipeline = PhysicsPipeline::new();
         let island_manager = IslandManager::new();
@@ -398,6 +445,7 @@ impl State {
             camera_buffer,
             instances,
             instance_buffer,
+            depth_view,
             physics_pipeline,
             gravity,
             integration_parameters,
@@ -430,13 +478,13 @@ impl State {
         );
         let (_, bod) = self.bodies.iter().next().unwrap();
 
-        for i in self.instances.iter_mut() {
-            i.position = cgmath::vec3(
+        if let Some(b) = self.instances.last_mut() {
+            b.position = cgmath::vec3(
                 bod.translation().x,
                 bod.translation().y,
                 bod.translation().z,
             );
-            i.rotation = cgmath::Quaternion::new(
+            b.rotation = cgmath::Quaternion::new(
                 bod.rotation().w,
                 bod.rotation().x,
                 bod.rotation().y,
@@ -459,6 +507,20 @@ impl State {
     fn ball_y(&mut self) -> f32 {
         for (_, b) in self.bodies.iter() {
             return b.translation().y;
+        }
+        0.0
+    }
+
+    fn ball_x(&mut self) -> f32 {
+        for (_, b) in self.bodies.iter() {
+            return b.translation().x;
+        }
+        0.0
+    }
+
+    fn ball_z(&mut self) -> f32 {
+        for (_, b) in self.bodies.iter() {
+            return b.translation().z;
         }
         0.0
     }
@@ -508,16 +570,23 @@ impl State {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
+                            r: 0.98,
+                            g: 0.945,
+                            b: 0.78,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
                 multiview_mask: None,
@@ -546,6 +615,7 @@ impl State {
             0,
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
+        self.depth_view = create_depth_texture(&self.device, &self.config);
         let width = self.canvas.width();
         let height = self.canvas.height();
         let max_size = self.device.limits().max_texture_dimension_2d;
@@ -600,4 +670,25 @@ impl Ticker {
     pub fn steps_run(&self) -> u64 {
         self.steps_run
     }
+}
+
+fn create_depth_texture(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth_texture"),
+        size: wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
