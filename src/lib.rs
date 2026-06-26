@@ -112,6 +112,7 @@ async fn arun() -> anyhow::Result<()> {
 
 #[wasm_bindgen(start)]
 pub fn run() {
+    console_error_panic_hook::set_once();
     console_log::init_with_level(log::Level::Info).unwrap_throw();
     log::info!("starting rust");
 
